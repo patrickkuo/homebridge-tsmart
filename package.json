@@ -1,8 +1,8 @@
 {
   "name": "homebridge-tsmart",
-  "displayName": "T-Smart Water Heater",
+  "displayName": "Homebridge T-Smart",
   "type": "module",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Homebridge plugin for Tesla T-Smart and other EUROICC water heaters",
   "author": "Patrick Kuo",
   "license": "MIT",
