@@ -1,0 +1,48 @@
+{
+  "name": "homebridge-tsmart",
+  "displayName": "T-Smart Water Heater",
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Homebridge plugin for Tesla T-Smart and other EUROICC water heaters",
+  "author": "Patrick Kuo",
+  "license": "MIT",
+  "homepage": "https://github.com/patrickkuo/homebridge-tsmart#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/patrickkuo/homebridge-tsmart.git"
+  },
+  "bugs": {
+    "url": "https://github.com/patrickkuo/homebridge-tsmart/issues"
+  },
+  "keywords": [
+    "homebridge-plugin",
+    "supports-hap",
+    "tsmart",
+    "tesla",
+    "euroicc",
+    "water-heater",
+    "thermostat"
+  ],
+  "main": "dist/index.js",
+  "engines": {
+    "node": "^20.17.0 || ^22 || ^24",
+    "homebridge": "^1.8.0 || ^2.0.0"
+  },
+  "scripts": {
+    "build": "rimraf ./dist && tsc",
+    "lint": "eslint . --max-warnings=0",
+    "test": "npm run build && node --test test/*.test.js",
+    "prepublishOnly": "npm run lint && npm run build && npm test",
+    "watch": "npm run build && npm link && nodemon"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.22.0",
+    "@types/node": "^22.13.10",
+    "eslint": "^9.22.0",
+    "homebridge": "^1.9.0",
+    "nodemon": "^3.1.9",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.8.2",
+    "typescript-eslint": "^8.26.1"
+  }
+}

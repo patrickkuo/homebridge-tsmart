@@ -1,0 +1,65 @@
+{
+  "pluginAlias": "TSmart",
+  "pluginType": "platform",
+  "singular": true,
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "T-Smart",
+        "required": true
+      },
+      "devices": {
+        "title": "Devices",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string",
+              "required": true,
+              "default": "Water Heater",
+              "description": "Display name in Apple Home"
+            },
+            "ip": {
+              "title": "IP Address",
+              "type": "string",
+              "required": true,
+              "format": "ipv4",
+              "placeholder": "192.168.1.50",
+              "description": "Static IP of the T-Smart / EUROICC heater"
+            },
+            "temperatureMode": {
+              "title": "Current temperature sensor",
+              "type": "string",
+              "default": "high",
+              "oneOf": [
+                { "title": "High (matches device display)", "enum": ["high"] },
+                { "title": "Low", "enum": ["low"] },
+                { "title": "Average", "enum": ["average"] }
+              ]
+            },
+            "modes": {
+              "title": "Mode switches",
+              "type": "array",
+              "description": "Exposed as HomeKit switches. Mutually exclusive; turning all off sets Manual mode. Omit for boost+away (keep in sync with DEFAULT_MODES in src/settings.ts); empty list disables mode switches.",
+              "default": ["boost", "away"],
+              "items": {
+                "type": "string",
+                "oneOf": [
+                  { "title": "Boost", "enum": ["boost"] },
+                  { "title": "Away (Travel)", "enum": ["away"] },
+                  { "title": "Eco", "enum": ["eco"] },
+                  { "title": "Smart", "enum": ["smart"] }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
