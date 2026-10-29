@@ -94,7 +94,7 @@ export class TSmartPlatform implements DynamicPlatformPlugin {
   /** Kept for accessory poll-failure hooks; discovery is UI-driven. */
   requestRediscovery(): void {
     this.log.debug(
-      'Skipping automatic rediscovery — use Scan network in plugin settings',
+      'Skipping automatic rediscovery — open plugin Settings to rescan',
     );
   }
 
@@ -266,7 +266,7 @@ export class TSmartPlatform implements DynamicPlatformPlugin {
 
     if (desired.size === 0) {
       this.log.warn(
-        'No enabled T-Smart devices. Open plugin Settings → Scan network, enable heaters, Save, then restart if needed.',
+        'No enabled T-Smart devices. Open plugin Settings, enable heaters, then Save.',
       );
     }
 

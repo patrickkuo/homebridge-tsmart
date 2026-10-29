@@ -7,8 +7,11 @@ let config = {
   devices: [],
 };
 
+let scanning = false;
+
 const statusEl = () => document.getElementById('status');
 const devicesEl = () => document.getElementById('devices');
+const refreshBtn = () => document.getElementById('refreshBtn');
 
 function setStatus(message, kind = '') {
   const el = statusEl();
@@ -124,8 +127,13 @@ async function loadConfig() {
 }
 
 async function onScan() {
-  const btn = document.getElementById('scanBtn');
+  if (scanning) {
+    return;
+  }
+  scanning = true;
+  const btn = refreshBtn();
   btn.disabled = true;
+  btn.classList.add('spinning');
   setStatus('Scanning LAN for T-Smart heaters…');
   try {
     const merged = await homebridge.request('/scan', {
@@ -149,7 +157,7 @@ async function onScan() {
         bits.push(`${promoted} linked to existing row`);
       }
       setStatus(
-        `Scan complete: ${bits.join(', ')}. Enable new ones, then Save (restart if HomeKit did not update).`,
+        `Scan complete: ${bits.join(', ')}. Enable new ones, then use Homebridge’s Save.`,
         'ok',
       );
     }
@@ -157,15 +165,10 @@ async function onScan() {
     const message = error instanceof Error ? error.message : String(error);
     setStatus(`Scan failed: ${message}`, 'error');
   } finally {
+    scanning = false;
     btn.disabled = false;
+    btn.classList.remove('spinning');
   }
-}
-
-async function onSave() {
-  await pushConfig();
-  await homebridge.savePluginConfig();
-  setStatus('Saved. HomeKit accessories update shortly; restart if anything looks stale.', 'ok');
-  homebridge.toast.success('Settings saved');
 }
 
 function onAddManual() {
@@ -179,8 +182,10 @@ function onAddManual() {
   void pushConfig();
 }
 
-document.getElementById('scanBtn').addEventListener('click', () => void onScan());
-document.getElementById('saveBtn').addEventListener('click', () => void onSave());
+document.getElementById('refreshBtn').addEventListener('click', () => void onScan());
 document.getElementById('addBtn').addEventListener('click', onAddManual);
 
-void loadConfig();
+void (async () => {
+  await loadConfig();
+  await onScan();
+})();

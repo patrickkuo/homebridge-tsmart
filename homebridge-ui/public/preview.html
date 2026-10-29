@@ -23,7 +23,7 @@
 </head>
 <body>
   <div class="frame">
-    <p class="banner">Local preview (mock Homebridge) — Scan will fail without the UI server</p>
+    <p class="banner">Local preview (mock Homebridge) — auto-scan will fail without the UI server</p>
     <div id="host"></div>
   </div>
   <script>
@@ -51,7 +51,6 @@
         ];
       },
       async updatePluginConfig() {},
-      async savePluginConfig() {},
       async request() {
         throw new Error('Scan needs the Homebridge UI server');
       },

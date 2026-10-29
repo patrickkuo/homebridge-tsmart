@@ -32,14 +32,13 @@ sudo hb-service restart
 
 ## Setup
 
-1. Open the plugin **Settings**.
-2. Click **Scan network** — heaters appear in the list immediately (disabled by default). No save/restart for the scan.
-3. Enable the heaters you want.
-4. Click **Save**. Accessories usually update live; restart Homebridge only if HomeKit looks stale.
+1. Open the plugin **Settings** — the LAN is scanned automatically (new heaters appear disabled).
+2. Enable the heaters you want (↻ refreshes the scan if needed).
+3. Use Homebridge’s **Save**. Accessories usually update live; restart only if HomeKit looks stale.
 
-Prefer a **static DHCP reservation** when you can; device id tracking survives IP changes — run Scan again after a move if needed (known ids get their IP updated; IP-only manual rows are linked when the same IP answers with an id).
+Prefer a **static DHCP reservation** when you can; device id tracking survives IP changes — open Settings (or hit ↻) after a move if needed (known ids get their IP updated; IP-only manual rows are linked when the same IP answers with an id).
 
-Discovery is **not** periodic. It only runs when you click **Scan network**.
+Discovery is **not** periodic. It runs when Settings opens (and when you tap ↻).
 
 ## Config example
 
