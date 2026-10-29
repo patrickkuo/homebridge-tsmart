@@ -1,46 +1,38 @@
 # homebridge-tsmart
 
-Homebridge plugin for **Tesla T-Smart** and other **EUROICC** water heaters. Control power and setpoint from Apple Home over the local network — no Home Assistant required.
+Homebridge plugin for **Tesla T-Smart** and other **EUROICC** water heaters. Local UDP only — control power and setpoint from Apple Home without Home Assistant.
 
 ## Install
 
-The Homebridge UI Plugins search only finds packages on the **npm registry**. Until this plugin is published there, install on the **Homebridge host** (SSH or UI Terminal), not on your laptop:
-
-```bash
-sudo hb-service add github:patrickkuo/homebridge-tsmart
-sudo hb-service restart
-```
-
-If `hb-service add` does not accept a GitHub URL:
-
-```bash
-cd /var/lib/homebridge
-sudo npm install github:patrickkuo/homebridge-tsmart
-sudo hb-service restart
-```
-
-Then add a **TSmart** platform in config (UI form or JSON).
-
-**“Cannot find module …/dist/index.js”** means an old GitHub install without a build. On the Homebridge host:
-
-```bash
-cd /var/lib/homebridge/node_modules/homebridge-tsmart
-sudo npm install --include=dev
-sudo npm run build
-sudo hb-service restart
-```
+In the Homebridge UI: **Plugins** → search **homebridge-tsmart** → **Install**. Then add a **TSmart** platform (or open the plugin **Settings**).
 
 ## Setup
 
-1. Open the plugin **Settings** — the LAN is scanned automatically (new heaters appear disabled).
-2. Enable the heaters you want (↻ refreshes the scan if needed).
+1. Open plugin **Settings** — the LAN is scanned automatically (new heaters stay disabled).
+2. Enable the heaters you want (↻ rescans if needed).
 3. Use Homebridge’s **Save**. Accessories usually update live; restart only if HomeKit looks stale.
 
-Prefer a **static DHCP reservation** when you can; device id tracking survives IP changes — open Settings (or hit ↻) after a move if needed (known ids get their IP updated; IP-only manual rows are linked when the same IP answers with an id).
+Prefer a **static DHCP reservation**. Device id survives IP changes — open Settings (or ↻) after a move to refresh known heaters’ IPs.
 
-Discovery is **not** periodic. It runs when Settings opens (and when you tap ↻).
+Discovery is not periodic; it runs when Settings opens and when you tap ↻.
 
-## Config example
+## Apple Home
+
+| What | Behavior |
+| --- | --- |
+| Heater tile | Off / Heat, target 15–70 °C, current temp = **High** probe (matches device display) |
+| Low | Extra thermometer for the Low probe |
+| Writes | Always **Manual** mode |
+
+### Why no Eco / Smart / Timer / Travel / Boost switches
+
+HomeKit has no first-class “preset mode” picker for heaters — only Off/Heat (+ setpoint). Exposing each T-Smart mode as a Switch clutters the accessory and fights Apple Home’s model (mutually exclusive toggles that aren’t a real radio control).
+
+This plugin keeps the heater tile simple and uses **Manual** on every HomeKit write so schedules and automations stay predictable. Use **Apple Home automations** for time-based setpoints and power; leave Eco / Smart / Timer / Travel / Boost to the heater panel or vendor app.
+
+## Config
+
+Usually edited via Settings. JSON shape:
 
 ```json
 {
@@ -63,25 +55,22 @@ Discovery is **not** periodic. It runs when Settings opens (and when you tap ↻
 
 | Field | Description |
 | --- | --- |
-| `devices[].enabled` | Expose in Apple Home (`false` = listed but hidden) |
+| `devices[].enabled` | `false` = listed in config but hidden from HomeKit |
+| `devices[].deviceId` | Stable id from discovery (survives IP changes) |
 
-## What you get in Apple Home
-
-- **Heater** tile (device name): Off / Heat, current temp = **High** probe, target temperature (15–70 °C)
-- **Low** thermometer under the same accessory
-- HomeKit writes use **Manual** mode (use Apple Home automations for schedules; Eco/Smart/Timer/Travel/Boost stay on the device / vendor app)
+Legacy `modes` / `temperatureMode` keys are ignored if present.
 
 ## UDP port 1337
 
-The heater protocol uses **UDP port 1337** with no authentication. This plugin binds local port 1337 (`SO_REUSEADDR`) to talk to the device and for discovery broadcasts.
+The protocol uses **UDP 1337** with no authentication. This plugin binds that port (`SO_REUSEADDR`) for control and discovery.
 
-**Do not run the Home Assistant `tsmart_ha` integration and this plugin on the same host if both bind port 1337.**
+**Do not run Home Assistant’s `tsmart_ha` and this plugin on the same host if both bind 1337.**
 
-Discovery requires the Homebridge host and heater on the **same L2 broadcast domain**.
+Host and heater must be on the **same L2 broadcast domain** for discovery.
 
 ## Protocol attribution
 
-Local UDP framing is ported from the MIT-licensed [andrew-codechimp/tsmart_ha](https://github.com/andrew-codechimp/tsmart_ha) Home Assistant integration (`custom_components/t_smart/tsmart.py`).
+Local UDP framing is ported from the MIT-licensed [andrew-codechimp/tsmart_ha](https://github.com/andrew-codechimp/tsmart_ha) integration (`custom_components/t_smart/tsmart.py`).
 
 ## Development
 
