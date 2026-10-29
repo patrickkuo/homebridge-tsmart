@@ -2,96 +2,42 @@
   "pluginAlias": "TSmart",
   "pluginType": "platform",
   "singular": true,
+  "customUi": true,
   "schema": {
     "type": "object",
     "properties": {
       "name": {
         "title": "Name",
+        "description": "Fixed platform label for Homebridge logs (not shown in Apple Home).",
         "type": "string",
         "default": "T-Smart",
         "required": true
       },
-      "discovery": {
-        "title": "Auto-discover / rediscover devices",
-        "type": "boolean",
-        "default": true,
-        "description": "UDP broadcast on port 1337 (same as HA). Adds heaters automatically, rebinds them if their IP changes, and retries after network loss. devices[] can override name/modes per IP."
-      },
-      "temperatureMode": {
-        "title": "Default current temperature sensor",
-        "type": "string",
-        "default": "high",
-        "oneOf": [
-          { "title": "High (matches device display)", "enum": ["high"] },
-          { "title": "Low", "enum": ["low"] },
-          { "title": "Average", "enum": ["average"] }
-        ],
-        "description": "Used for discovered devices and when a device omits temperatureMode"
-      },
-      "modes": {
-        "title": "Default mode switches",
-        "type": "array",
-        "description": "Used for discovered devices and when a device omits modes. Keep in sync with DEFAULT_MODES in src/settings.ts.",
-        "default": ["boost", "away"],
-        "items": {
-          "type": "string",
-          "oneOf": [
-            { "title": "Boost", "enum": ["boost"] },
-            { "title": "Away (Travel)", "enum": ["away"] },
-            { "title": "Eco", "enum": ["eco"] },
-            { "title": "Smart", "enum": ["smart"] }
-          ]
-        }
-      },
       "devices": {
-        "title": "Devices (optional overrides / static)",
+        "title": "Devices",
         "type": "array",
-        "description": "Optional. With discovery on, entries override name/modes for a known IP and keep the device if it is offline during discover. With discovery off, only these devices are used.",
         "items": {
           "type": "object",
           "properties": {
+            "enabled": {
+              "title": "Enable in HomeKit",
+              "type": "boolean",
+              "default": true
+            },
             "name": {
               "title": "Name",
               "type": "string",
-              "required": true,
-              "default": "Water Heater",
-              "description": "Display name in Apple Home"
+              "required": true
             },
             "ip": {
               "title": "IP Address",
               "type": "string",
               "required": true,
-              "format": "ipv4",
-              "placeholder": "192.168.1.50",
-              "description": "IP of the T-Smart / EUROICC heater (static IP recommended)"
+              "format": "ipv4"
             },
             "deviceId": {
-              "title": "Device ID (optional)",
-              "type": "string",
-              "description": "Stable heater id from discovery (hex). Optional — learned automatically after first successful contact. Useful for VLAN/static setups."
-            },
-            "temperatureMode": {
-              "title": "Current temperature sensor",
-              "type": "string",
-              "oneOf": [
-                { "title": "High (matches device display)", "enum": ["high"] },
-                { "title": "Low", "enum": ["low"] },
-                { "title": "Average", "enum": ["average"] }
-              ]
-            },
-            "modes": {
-              "title": "Mode switches",
-              "type": "array",
-              "description": "Exposed as HomeKit switches. Mutually exclusive; turning all off sets Manual mode. Omit to use platform default; empty list disables mode switches.",
-              "items": {
-                "type": "string",
-                "oneOf": [
-                  { "title": "Boost", "enum": ["boost"] },
-                  { "title": "Away (Travel)", "enum": ["away"] },
-                  { "title": "Eco", "enum": ["eco"] },
-                  { "title": "Smart", "enum": ["smart"] }
-                ]
-              }
+              "title": "Device ID",
+              "type": "string"
             }
           }
         }

@@ -1,25 +1,28 @@
-export type TemperatureMode = 'high' | 'low' | 'average';
-
-export type ModeToggleId = 'boost' | 'away' | 'eco' | 'smart';
-
 export interface TSmartDeviceConfig {
   name: string;
   ip: string;
   /** Stable heater id from discovery / config read — survives IP changes. */
   deviceId?: string;
-  temperatureMode?: TemperatureMode;
-  modes?: ModeToggleId[];
+  /**
+   * When false, listed in config but not exposed to HomeKit.
+   * Omitted / undefined means enabled (backward compatible).
+   */
+  enabled?: boolean;
 }
-
-const TEMPERATURE_MODES = new Set<TemperatureMode>(['high', 'low', 'average']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** HomeKit exposure: omitted `enabled` counts as on. */
+export function isDeviceEnabled(device: Pick<TSmartDeviceConfig, 'enabled'>): boolean {
+  return device.enabled !== false;
+}
+
 /**
  * Validate device config from Homebridge config or accessory.context.
  * Returns null when required fields are missing/invalid.
+ * Legacy `modes` / `temperatureMode` keys are ignored.
  */
 export function parseDeviceConfig(raw: unknown): TSmartDeviceConfig | null {
   if (!isRecord(raw)) {
@@ -44,19 +47,11 @@ export function parseDeviceConfig(raw: unknown): TSmartDeviceConfig | null {
     device.deviceId = raw.deviceId.toUpperCase();
   }
 
-  if (raw.temperatureMode !== undefined) {
-    if (typeof raw.temperatureMode !== 'string' || !TEMPERATURE_MODES.has(raw.temperatureMode as TemperatureMode)) {
+  if (raw.enabled !== undefined) {
+    if (typeof raw.enabled !== 'boolean') {
       return null;
     }
-    device.temperatureMode = raw.temperatureMode as TemperatureMode;
-  }
-
-  if (raw.modes !== undefined) {
-    if (!Array.isArray(raw.modes) || !raw.modes.every((mode) => typeof mode === 'string')) {
-      return null;
-    }
-    // Unknown ids are filtered/warned later in the accessory.
-    device.modes = raw.modes as ModeToggleId[];
+    device.enabled = raw.enabled;
   }
 
   return device;

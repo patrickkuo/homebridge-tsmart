@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script defer src="ui.js"></script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --gap: 0.75rem;
+      --border: color-mix(in srgb, CanvasText 18%, transparent);
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0;
+      padding: 0.25rem 0.5rem 1rem;
+      color: CanvasText;
+      background: transparent;
+    }
+    h5 { margin: 1rem 0 0.4rem; }
+    h6 { margin: 0; }
+    .muted { opacity: 0.75; font-size: 0.9rem; margin: 0 0 0.75rem; }
+    .row { display: flex; flex-wrap: wrap; gap: var(--gap); align-items: center; margin-bottom: var(--gap); }
+    .field { display: flex; flex-direction: column; gap: 0.25rem; flex: 1 1 10rem; }
+    label { font-size: 0.85rem; font-weight: 600; }
+    input[type="text"] {
+      padding: 0.4rem 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 0.35rem;
+      background: Field;
+      color: FieldText;
+    }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      margin-bottom: 0.75rem;
+      background: color-mix(in srgb, CanvasText 4%, Canvas);
+      overflow: hidden;
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      gap: var(--gap);
+      align-items: center;
+      padding: 0.5rem 0.65rem 0.5rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in srgb, CanvasText 6%, Canvas);
+    }
+    .card-heading {
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .card-body { padding: 0.75rem; }
+    .card-body .row:last-child { margin-bottom: 0; }
+    button {
+      cursor: pointer;
+      border-radius: 0.35rem;
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.85rem;
+      background: color-mix(in srgb, CanvasText 8%, Canvas);
+      color: CanvasText;
+    }
+    button.primary {
+      background: #0d6efd;
+      border-color: #0d6efd;
+      color: #fff;
+    }
+    button.icon {
+      flex: 0 0 auto;
+      border: none;
+      background: transparent;
+      padding: 0.1rem 0.45rem;
+      font-size: 1.35rem;
+      line-height: 1;
+      font-weight: 500;
+      opacity: 0.55;
+    }
+    button.icon:hover { opacity: 1; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .status { min-height: 1.25rem; font-size: 0.9rem; margin: 0.25rem 0 0.75rem; }
+    .status.error { color: #c0392b; }
+    .status.ok { color: #1e8449; }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <button type="button" class="primary" id="scanBtn">Scan network</button>
+    <button type="button" id="saveBtn">Save</button>
+  </div>
+  <p class="muted">
+    Scan finds heaters on the LAN and adds them below (disabled until you enable them).
+    Enable devices, then Save — accessories usually update live.
+  </p>
+  <p class="status" id="status"></p>
+
+  <h5>Devices</h5>
+  <p class="muted" id="emptyDevices">No devices yet — click Scan network, or add one manually.</p>
+  <div id="devices"></div>
+  <button type="button" id="addBtn">Add device manually</button>
+</body>
+</html>

@@ -1,4 +1,3 @@
-import type { TemperatureMode } from './types.js';
 import type { TSmartStatus } from './tsmart.js';
 
 export type HeaterCurrentState = 'inactive' | 'idle' | 'heating';
@@ -8,13 +7,13 @@ export interface HeaterPresentation {
   currentState: HeaterCurrentState;
   /** Heat-only accessory; always heat. */
   targetState: 'heat';
+  /** Always the High probe (matches device display). */
   currentTemperature: number;
   targetTemperature: number;
 }
 
 export function presentHeater(
   status: TSmartStatus,
-  temperatureMode: TemperatureMode,
   clampSetpoint: (value: number) => number,
 ): HeaterPresentation {
   return {
@@ -25,24 +24,9 @@ export function presentHeater(
         ? 'heating'
         : 'idle',
     targetState: 'heat',
-    currentTemperature: currentTemperature(status, temperatureMode),
+    currentTemperature: status.temperatureHigh,
     targetTemperature: clampSetpoint(status.setpoint),
   };
-}
-
-export function currentTemperature(
-  status: TSmartStatus,
-  temperatureMode: TemperatureMode,
-): number {
-  switch (temperatureMode) {
-    case 'low':
-      return status.temperatureLow;
-    case 'average':
-      return status.temperatureAverage;
-    case 'high':
-    default:
-      return status.temperatureHigh;
-  }
 }
 
 export function clampSetpoint(

@@ -1,3 +1,5 @@
+import { watch, type FSWatcher } from 'node:fs';
+
 import type {
   API,
   Characteristic,
@@ -8,41 +10,41 @@ import type {
   Service,
 } from 'homebridge';
 
-import { deviceIdsMatch, deviceNamesMatch } from './deviceMatch.js';
+import {
+  ensureCachedDeviceInConfig,
+  persistLearnedDeviceId as writeLearnedDeviceId,
+  readTSmartPlatformConfig,
+} from './configStore.js';
+import {
+  deviceIdsMatch,
+  deviceNamesMatch,
+  normalizeDeviceName,
+} from './deviceMatch.js';
 import { TSmartPlatformAccessory } from './platformAccessory.js';
 import {
-  DEFAULT_MODES,
+  CONFIG_WATCH_DEBOUNCE_MS,
   PLATFORM_NAME,
   PLUGIN_NAME,
-  REDISCOVER_DEBOUNCE_MS,
-  REDISCOVER_INTERVAL_MS,
 } from './settings.js';
-import { discoverDevices, type DiscoveredDevice } from './tsmart.js';
 import {
+  isDeviceEnabled,
   parseDeviceConfig,
-  type ModeToggleId,
-  type TemperatureMode,
   type TSmartDeviceConfig,
 } from './types.js';
 
-export type { ModeToggleId, TemperatureMode, TSmartDeviceConfig } from './types.js';
+export type { TSmartDeviceConfig } from './types.js';
 
 export interface TSmartPlatformConfig extends PlatformConfig {
   name?: string;
-  /** UDP broadcast discovery / rediscovery (default true). */
-  discovery?: boolean;
-  /** Defaults applied to auto-discovered devices (and omitted device fields). */
-  temperatureMode?: TemperatureMode;
-  modes?: ModeToggleId[];
   devices?: TSmartDeviceConfig[];
 }
 
 /**
  * Homebridge dynamic platform for T-Smart / EUROICC water heaters.
  *
- * Accessories are matched by stable `deviceId` when known so an IP change
- * rebinds the same HomeKit accessory. Periodic rediscovery (and failure-driven
- * rediscovery) refreshes endpoints after network loss.
+ * Network discovery is done from the custom settings UI (Scan button).
+ * This platform only binds enabled devices from config (and applies Saves
+ * live by watching config.json).
  */
 export class TSmartPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
@@ -51,17 +53,12 @@ export class TSmartPlatform implements DynamicPlatformPlugin {
   public readonly accessories = new Map<string, PlatformAccessory>();
   private readonly handlers = new Map<string, TSmartPlatformAccessory>();
 
-  private rediscoverTimer?: ReturnType<typeof setInterval>;
-  private rediscoverDebounce?: ReturnType<typeof setTimeout>;
   private reconcileInFlight = false;
-  private reconcilePending: { addNew: boolean } | null = null;
+  private reconcilePending = false;
   private shuttingDown = false;
-
-  /**
-   * For the current reconcile pass: newIp → previousIp, so findExisting can
-   * locate the HomeKit accessory still keyed/cached under the old IP.
-   */
-  private readonly ipAliases = new Map<string, string>();
+  private configWatcher?: FSWatcher;
+  private configWatchDebounce?: ReturnType<typeof setTimeout>;
+  private ignoreConfigWatchUntil = 0;
 
   constructor(
     public readonly log: Logging,
@@ -75,22 +72,13 @@ export class TSmartPlatform implements DynamicPlatformPlugin {
 
     this.api.on('didFinishLaunching', () => {
       this.log.debug('Executed didFinishLaunching callback');
-      void this.reconcile({ addNew: this.discoveryEnabled });
-      this.rediscoverTimer = setInterval(() => {
-        void this.reconcile({ addNew: this.discoveryEnabled });
-      }, REDISCOVER_INTERVAL_MS);
+      this.startConfigWatch();
+      void this.reconcile();
     });
 
     this.api.on('shutdown', () => {
       this.shuttingDown = true;
-      if (this.rediscoverTimer) {
-        clearInterval(this.rediscoverTimer);
-        this.rediscoverTimer = undefined;
-      }
-      if (this.rediscoverDebounce) {
-        clearTimeout(this.rediscoverDebounce);
-        this.rediscoverDebounce = undefined;
-      }
+      this.stopConfigWatch();
       for (const handler of this.handlers.values()) {
         handler.destroy();
       }
@@ -98,69 +86,159 @@ export class TSmartPlatform implements DynamicPlatformPlugin {
     });
   }
 
-  get discoveryEnabled(): boolean {
-    return this.config.discovery !== false;
-  }
-
   configureAccessory(accessory: PlatformAccessory): void {
     this.log.info('Loading accessory from cache:', accessory.displayName);
     this.accessories.set(accessory.UUID, accessory);
   }
 
-  /**
-   * Ask the platform to rebroadcast discovery soon (e.g. after poll failures).
-   * Does not add brand-new heaters — only rebinds known deviceIds / configured IPs.
-   */
+  /** Kept for accessory poll-failure hooks; discovery is UI-driven. */
   requestRediscovery(): void {
-    if (this.rediscoverDebounce) {
-      clearTimeout(this.rediscoverDebounce);
-    }
-    this.rediscoverDebounce = setTimeout(() => {
-      this.rediscoverDebounce = undefined;
-      void this.reconcile({ addNew: false });
-    }, REDISCOVER_DEBOUNCE_MS);
+    this.log.debug(
+      'Skipping automatic rediscovery — use Scan network in plugin settings',
+    );
   }
 
-  async reconcile(options: { addNew: boolean }): Promise<void> {
+  /** Write a runtime-learned deviceId onto the matching config.json row. */
+  persistLearnedDeviceId(learned: { name: string; ip: string; deviceId: string }): void {
+    try {
+      this.suppressConfigWatch(3_000);
+      const wrote = writeLearnedDeviceId(this.api.user.configPath(), learned);
+      if (wrote) {
+        const live = readTSmartPlatformConfig(this.api.user.configPath());
+        this.config.devices = live.devices;
+        this.log.info(
+          'Saved learned device id %s for %s into config',
+          learned.deviceId,
+          learned.name,
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.log.warn('Could not persist learned device id: %s', message);
+    }
+  }
+
+  async reconcile(): Promise<void> {
     if (this.shuttingDown) {
       return;
     }
     if (this.reconcileInFlight) {
-      this.reconcilePending = {
-        addNew: Boolean(this.reconcilePending?.addNew || options.addNew),
-      };
+      this.reconcilePending = true;
       return;
     }
 
     this.reconcileInFlight = true;
     try {
-      let next: { addNew: boolean } | null = options;
-      while (next && !this.shuttingDown) {
-        const current = next;
-        this.reconcilePending = null;
-        await this.reconcileUnlocked(current);
-        next = this.reconcilePending;
-      }
+      do {
+        this.reconcilePending = false;
+        await this.reconcileUnlocked();
+      } while (this.reconcilePending && !this.shuttingDown);
     } finally {
       this.reconcileInFlight = false;
     }
   }
 
-  private async reconcileUnlocked(options: { addNew: boolean }): Promise<void> {
+  private startConfigWatch(): void {
+    const configPath = this.api.user.configPath();
+    try {
+      this.configWatcher = watch(configPath, () => {
+        if (this.shuttingDown || Date.now() < this.ignoreConfigWatchUntil) {
+          return;
+        }
+        if (this.configWatchDebounce) {
+          clearTimeout(this.configWatchDebounce);
+        }
+        this.configWatchDebounce = setTimeout(() => {
+          this.configWatchDebounce = undefined;
+          this.onConfigFileChanged();
+        }, CONFIG_WATCH_DEBOUNCE_MS);
+      });
+      this.configWatcher.on('error', (error) => {
+        this.log.warn('config.json watch error: %s', error.message);
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.log.warn('Could not watch config.json for live settings: %s', message);
+    }
+  }
+
+  private stopConfigWatch(): void {
+    if (this.configWatchDebounce) {
+      clearTimeout(this.configWatchDebounce);
+      this.configWatchDebounce = undefined;
+    }
+    if (this.configWatcher) {
+      this.configWatcher.close();
+      this.configWatcher = undefined;
+    }
+  }
+
+  private suppressConfigWatch(ms = 2000): void {
+    this.ignoreConfigWatchUntil = Date.now() + ms;
+  }
+
+  private onConfigFileChanged(): void {
     if (this.shuttingDown) {
       return;
     }
 
-    const platformTempMode = this.config.temperatureMode ?? 'high';
-    const platformModes = this.config.modes ?? DEFAULT_MODES;
-    this.ipAliases.clear();
+    try {
+      const live = readTSmartPlatformConfig(this.api.user.configPath());
+      this.config.devices = live.devices;
+      this.log.info('Settings saved — applying device enable changes');
+      void this.reconcile();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.log.warn('Could not reload settings from config.json: %s', message);
+    }
+  }
 
-    /** Desired devices keyed by a stable lookup key (deviceId or ip:…). */
+  private async reconcileUnlocked(): Promise<void> {
+    if (this.shuttingDown) {
+      return;
+    }
+
+    const configPath = this.api.user.configPath();
+    this.suppressConfigWatch(3_000);
+
+    for (const accessory of this.accessories.values()) {
+      const cached = parseDeviceConfig(accessory.context.device);
+      if (!cached) {
+        continue;
+      }
+      try {
+        const result = ensureCachedDeviceInConfig(configPath, cached);
+        if (result.wrote) {
+          this.config.devices = result.devices;
+          this.log.info(
+            'Added cached heater "%s" to config (enabled) — manage it under Devices',
+            cached.name,
+          );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.log.warn('Could not migrate cached device into config: %s', message);
+      }
+    }
+
     const desired = new Map<string, TSmartDeviceConfig>();
 
     const remember = (device: TSmartDeviceConfig) => {
-      const key = device.deviceId ? `id:${device.deviceId}` : `ip:${device.ip}`;
+      if (!isDeviceEnabled(device)) {
+        return;
+      }
+      // deviceId is stable identity; IP-only rows also include name so two
+      // different heaters at the same IP are not collapsed.
+      const key = device.deviceId
+        ? `id:${device.deviceId.toUpperCase()}`
+        : `ip:${device.ip}:${normalizeDeviceName(device.name)}`;
       const prev = desired.get(key);
+      if (prev) {
+        this.log.warn(
+          'Duplicate enabled device config for %s — keeping one entry',
+          key,
+        );
+      }
       desired.set(
         key,
         prev
@@ -169,197 +247,17 @@ export class TSmartPlatform implements DynamicPlatformPlugin {
       );
     };
 
-    const forgetIpKey = (ip: string) => {
-      desired.delete(`ip:${ip}`);
-    };
-
-    const recordIpMove = (previousIp: string, nextIp: string) => {
-      if (previousIp !== nextIp) {
-        this.ipAliases.set(nextIp, previousIp);
-      }
-    };
-
     for (const raw of this.config.devices ?? []) {
       const device = parseDeviceConfig(raw);
       if (!device) {
         this.log.warn('Skipping invalid device config:', raw);
         continue;
       }
-      remember({
-        ...device,
-        temperatureMode: device.temperatureMode ?? platformTempMode,
-        modes: device.modes ?? platformModes,
-      });
-    }
-
-    // With discovery on, keep previously learned identities so offline heaters stay.
-    // With discovery off, config.devices alone defines the set (cache must not resurrect removals).
-    if (this.discoveryEnabled) {
-      for (const accessory of this.accessories.values()) {
-        const cached = parseDeviceConfig(accessory.context.device);
-        if (!cached) {
-          continue;
-        }
-        remember({
-          ...cached,
-          temperatureMode: cached.temperatureMode ?? platformTempMode,
-          modes: cached.modes ?? platformModes,
-        });
-      }
-    }
-
-    let found: DiscoveredDevice[] = [];
-    try {
-      found = await discoverDevices(this.log);
-      if (this.shuttingDown) {
-        return;
-      }
-      this.log.info('Discovery found %d device(s)', found.length);
-    } catch (error) {
-      if (this.shuttingDown) {
-        return;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      this.log.error('UDP discovery failed: %s', message);
-    }
-
-    const foundIps = new Set(found.map((hit) => hit.ipAddress));
-    const unmatched: DiscoveredDevice[] = [];
-
-    for (const hit of found) {
-      const byId = hit.deviceId ? desired.get(`id:${hit.deviceId}`) : undefined;
-      let byIp = desired.get(`ip:${hit.ipAddress}`);
-
-      // Don't assume IP-only config at this address is the same heater (DHCP reuse).
-      if (byIp && !byId && !this.sameHeater(byIp, hit.deviceId, hit.name)) {
-        byIp = undefined;
-      }
-
-      const existing = byId ?? byIp;
-
-      if (!existing) {
-        unmatched.push(hit);
+      if (!device.ip) {
+        this.log.warn('Skipping device "%s" — IP required', device.name);
         continue;
       }
-
-      const previousIp = existing.ip;
-      remember({
-        ...existing,
-        ip: hit.ipAddress,
-        deviceId: hit.deviceId,
-        name: existing.name || hit.name,
-      });
-      recordIpMove(previousIp, hit.ipAddress);
-
-      if (hit.deviceId) {
-        forgetIpKey(hit.ipAddress);
-        if (previousIp !== hit.ipAddress) {
-          forgetIpKey(previousIp);
-        }
-      }
-    }
-
-    // IP-only heaters missing from this broadcast (plus any cache-only leftovers).
-    const listStaleIpOnly = (excludeIps: ReadonlySet<string>): TSmartDeviceConfig[] => {
-      const stale: TSmartDeviceConfig[] = [];
-      const seenIps = new Set<string>();
-
-      for (const [key, device] of desired) {
-        if (!key.startsWith('ip:') || device.deviceId || foundIps.has(device.ip) || excludeIps.has(device.ip)) {
-          continue;
-        }
-        stale.push(device);
-        seenIps.add(device.ip);
-      }
-
-      for (const accessory of this.accessories.values()) {
-        const cached = parseDeviceConfig(accessory.context.device);
-        if (
-          !cached ||
-          cached.deviceId ||
-          foundIps.has(cached.ip) ||
-          excludeIps.has(cached.ip) ||
-          seenIps.has(cached.ip)
-        ) {
-          continue;
-        }
-        stale.push(cached);
-        seenIps.add(cached.ip);
-      }
-
-      return stale;
-    };
-
-    const rebindIpOnly = (stale: TSmartDeviceConfig, hit: DiscoveredDevice) => {
-      this.log.info(
-        'Rebinding IP-only heater "%s" %s → %s (id %s)',
-        stale.name,
-        stale.ip,
-        hit.ipAddress,
-        hit.deviceId,
-      );
-      recordIpMove(stale.ip, hit.ipAddress);
-      forgetIpKey(stale.ip);
-      remember({
-        ...stale,
-        ip: hit.ipAddress,
-        deviceId: hit.deviceId,
-        name: stale.name || hit.name,
-        temperatureMode: stale.temperatureMode ?? platformTempMode,
-        modes: stale.modes ?? platformModes,
-      });
-    };
-
-    // IP-only rebind before deviceId was learned — require a unique name match.
-    if (unmatched.length > 0) {
-      const rebound = new Set<string>();
-      const stillUnmatched: DiscoveredDevice[] = [];
-
-      for (const hit of unmatched) {
-        const candidates = listStaleIpOnly(rebound).filter((stale) =>
-          deviceNamesMatch(stale.name, hit.name),
-        );
-
-        if (candidates.length === 1) {
-          const stale = candidates[0]!;
-          rebindIpOnly(stale, hit);
-          rebound.add(stale.ip);
-          continue;
-        }
-
-        stillUnmatched.push(hit);
-      }
-
-      if (!options.addNew) {
-        if (stillUnmatched.length > 0) {
-          this.log.debug(
-            'Ignoring %d unmatched discovery hit(s) during rediscovery (addNew=false)',
-            stillUnmatched.length,
-          );
-        }
-      } else {
-        // stillUnmatched already failed name match against every missing IP-only heater,
-        // so these hits are safe to treat as distinct devices.
-        for (const hit of stillUnmatched) {
-          remember({
-            name: hit.name,
-            ip: hit.ipAddress,
-            deviceId: hit.deviceId,
-            temperatureMode: platformTempMode,
-            modes: platformModes,
-          });
-        }
-      }
-    }
-
-    // Drop stale ip: keys after moves / deviceId promotion.
-    for (const previousIp of this.ipAliases.values()) {
-      forgetIpKey(previousIp);
-    }
-    for (const device of [...desired.values()]) {
-      if (device.deviceId) {
-        forgetIpKey(device.ip);
-      }
+      remember(device);
     }
 
     if (this.shuttingDown) {
@@ -368,13 +266,13 @@ export class TSmartPlatform implements DynamicPlatformPlugin {
 
     if (desired.size === 0) {
       this.log.warn(
-        'No T-Smart devices found. Enable discovery (default) or add devices[].ip in config.',
+        'No enabled T-Smart devices. Open plugin Settings → Scan network, enable heaters, Save, then restart if needed.',
       );
     }
 
     const active = new Set<string>();
     const claimedUuids = new Set<string>();
-    const liveByIp = new Map(found.map((hit) => [hit.ipAddress, hit]));
+    const disabledUuids = this.collectDisabledAccessoryUuids();
 
     for (const device of desired.values()) {
       if (this.shuttingDown) {
@@ -396,9 +294,6 @@ export class TSmartPlatform implements DynamicPlatformPlugin {
           handler = new TSmartPlatformAccessory(this, existingAccessory);
           this.handlers.set(uuid, handler);
         } else {
-          if (this.shuttingDown) {
-            return;
-          }
           this.log.info(
             'Adding new accessory: %s (%s%s)',
             device.name,
@@ -414,42 +309,25 @@ export class TSmartPlatform implements DynamicPlatformPlugin {
         }
       }
 
-      const liveAtIp = liveByIp.get(device.ip);
-      if (liveAtIp && !this.sameHeater(device, liveAtIp.deviceId, liveAtIp.name)) {
-        this.log.warn(
-          'Parking "%s"%s — IP %s currently serves "%s" (id %s)',
-          device.name,
-          device.deviceId ? ` (id ${device.deviceId})` : '',
-          device.ip,
-          liveAtIp.name,
-          liveAtIp.deviceId,
-        );
-        handler.parkForIpConflict();
-        continue;
-      }
-
       handler.updateEndpoint(device);
     }
 
-    // Prune inactive accessories: always when discovery is off; when discovery is on,
-    // only remove orphans left behind after an IP rebind created a replacement UUID.
-    const previousIps = new Set(this.ipAliases.values());
     for (const [uuid, handler] of [...this.handlers.entries()]) {
       if (active.has(uuid)) {
         continue;
       }
       const accessory = this.accessories.get(uuid);
       const cached = parseDeviceConfig(accessory?.context.device);
-      const isStaleIpOrphan = cached !== null && previousIps.has(cached.ip);
+      const isDisabled = disabledUuids.has(uuid);
+      const stillConfigured = [...desired.values()].some((device) =>
+        this.accessoryMatchesDevice(uuid, cached, device),
+      );
 
-      if (!isStaleIpOrphan && this.discoveryEnabled) {
+      if (!isDisabled && stillConfigured) {
         continue;
       }
 
-      this.log.info(
-        'Removing accessory after rebind/prune: %s',
-        accessory?.displayName ?? uuid,
-      );
+      this.log.info('Removing accessory: %s', accessory?.displayName ?? uuid);
       handler.destroy();
       this.handlers.delete(uuid);
       if (accessory) {
@@ -459,16 +337,37 @@ export class TSmartPlatform implements DynamicPlatformPlugin {
     }
   }
 
-  /** Known heater vs a live discovery/identity probe at an IP. */
-  private sameHeater(
-    known: Pick<TSmartDeviceConfig, 'deviceId' | 'name'>,
-    liveDeviceId: string,
-    liveName: string,
-  ): boolean {
-    if (known.deviceId) {
-      return deviceIdsMatch(known.deviceId, liveDeviceId);
+  private collectDisabledAccessoryUuids(): Set<string> {
+    const disabled = new Set<string>();
+    for (const raw of this.config.devices ?? []) {
+      const device = parseDeviceConfig(raw);
+      if (!device || isDeviceEnabled(device)) {
+        continue;
+      }
+      const { uuid } = this.findExisting(device, new Set());
+      disabled.add(uuid);
+      for (const [uuidKey, accessory] of this.accessories) {
+        const cached = parseDeviceConfig(accessory.context.device);
+        if (this.accessoryMatchesDevice(uuidKey, cached, device)) {
+          disabled.add(uuidKey);
+        }
+      }
     }
-    return deviceNamesMatch(known.name, liveName);
+    return disabled;
+  }
+
+  private accessoryMatchesDevice(
+    uuid: string,
+    cached: TSmartDeviceConfig | null,
+    device: TSmartDeviceConfig,
+  ): boolean {
+    if (device.deviceId && deviceIdsMatch(cached?.deviceId, device.deviceId)) {
+      return true;
+    }
+    if (cached?.ip === device.ip && deviceNamesMatch(cached.name, device.name)) {
+      return true;
+    }
+    return uuid === this.uuidFor(device);
   }
 
   private uuidFor(device: Pick<TSmartDeviceConfig, 'deviceId' | 'ip'>): string {
@@ -477,10 +376,6 @@ export class TSmartPlatform implements DynamicPlatformPlugin {
       : this.api.hap.uuid.generate(`tsmart:ip:${device.ip}`);
   }
 
-  /**
-   * Prefer stable deviceId UUID; fall back to IP (incl. legacy `tsmart:${ip}`).
-   * Also matches accessories still cached under a previous IP from this reconcile.
-   */
   private findExisting(
     device: TSmartDeviceConfig,
     claimedUuids: ReadonlySet<string>,
@@ -518,7 +413,6 @@ export class TSmartPlatform implements DynamicPlatformPlugin {
       if (cached.deviceId) {
         return deviceIdsMatch(cached.deviceId, device.deviceId);
       }
-      // Cached IP-only accessory: only reuse when promoting the same heater (name match).
       return deviceNamesMatch(cached.name, device.name);
     };
 
@@ -548,17 +442,7 @@ export class TSmartPlatform implements DynamicPlatformPlugin {
       return byCurrentIp;
     }
 
-    const previousIp = this.ipAliases.get(device.ip);
-    if (previousIp) {
-      const byPrevious = matchByIp(previousIp);
-      if (byPrevious) {
-        return byPrevious;
-      }
-    }
-
     let uuid = this.uuidFor(device);
-    // Two desired entries must never share one HomeKit UUID in the same pass
-    // (e.g. parked IP-only heater + live peer at the same address).
     if (!available(uuid)) {
       uuid = this.api.hap.uuid.generate(
         `tsmart:ip:${device.ip}:${device.name}:${device.deviceId ?? ''}`,

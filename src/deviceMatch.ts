@@ -26,17 +26,3 @@ export function deviceIdsMatch(
   }
   return a.toUpperCase() === b.toUpperCase();
 }
-
-/** True when mode toggle lists are the same sequence. */
-export function modeListsEqual(
-  a: string[] | undefined,
-  b: string[] | undefined,
-): boolean {
-  if (a === b) {
-    return true;
-  }
-  if (!a || !b || a.length !== b.length) {
-    return false;
-  }
-  return a.every((id, index) => id === b[index]);
-}

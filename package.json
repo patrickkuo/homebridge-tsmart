@@ -38,10 +38,14 @@
   },
   "files": [
     "dist",
+    "homebridge-ui",
     "config.schema.json",
     "LICENSE",
     "README.md"
   ],
+  "dependencies": {
+    "@homebridge/plugin-ui-utils": "^2.2.6"
+  },
   "devDependencies": {
     "@eslint/js": "^9.22.0",
     "@types/node": "^22.13.10",

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TSmart settings UI preview</title>
+  <style>
+    body { margin: 0; background: #1c1c1e; }
+    .frame {
+      max-width: 42rem;
+      margin: 1rem auto;
+      padding: 1rem;
+      background: #2c2c2e;
+      border-radius: 0.75rem;
+      box-shadow: 0 8px 32px rgb(0 0 0 / 35%);
+    }
+    .banner {
+      font: 600 0.85rem system-ui, sans-serif;
+      color: #aaa;
+      margin: 0 0 0.75rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="banner">Local preview (mock Homebridge) — Scan will fail without the UI server</p>
+    <div id="host"></div>
+  </div>
+  <script>
+    window.homebridge = {
+      async getPluginConfig() {
+        return [
+          {
+            platform: 'TSmart',
+            name: 'T-Smart',
+            devices: [
+              {
+                enabled: true,
+                name: 'Water Heater',
+                ip: '192.168.1.50',
+                deviceId: 'ABCD',
+              },
+              {
+                enabled: false,
+                name: 'Guest Bathroom',
+                ip: '192.168.1.51',
+                deviceId: 'EF01',
+              },
+            ],
+          },
+        ];
+      },
+      async updatePluginConfig() {},
+      async savePluginConfig() {},
+      async request() {
+        throw new Error('Scan needs the Homebridge UI server');
+      },
+      toast: { success() {}, error() {} },
+    };
+  </script>
+  <script>
+    fetch('index.html')
+      .then((r) => r.text())
+      .then((html) => {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        for (const style of doc.head.querySelectorAll('style')) {
+          document.head.append(style.cloneNode(true));
+        }
+        document.getElementById('host').append(...doc.body.childNodes);
+        const s = document.createElement('script');
+        s.src = 'ui.js';
+        document.body.append(s);
+      });
+  </script>
+</body>
+</html>

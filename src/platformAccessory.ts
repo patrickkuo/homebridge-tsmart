@@ -1,12 +1,11 @@
 import type { CharacteristicValue, PlatformAccessory, Service } from 'homebridge';
 
-import { deviceIdsMatch, deviceNamesMatch, modeListsEqual } from './deviceMatch.js';
+import { deviceIdsMatch, deviceNamesMatch } from './deviceMatch.js';
 import { clampSetpoint, presentHeater } from './heaterPresentation.js';
 import type { TSmartPlatform } from './platform.js';
 import { SerialQueue } from './serialQueue.js';
 import {
   AFTER_CONTROL_REFRESH_MS,
-  DEFAULT_MODES,
   MAX_STATUS_FAILURES,
   POLL_INTERVAL_MS,
   TEMP_MAX,
@@ -15,33 +14,14 @@ import {
 } from './settings.js';
 import { StatusCoordinator } from './statusCoordinator.js';
 import { sleep, TSmartClient, TSmartMode, type TSmartStatus } from './tsmart.js';
-import {
-  parseDeviceConfig,
-  type ModeToggleId,
-  type TemperatureMode,
-  type TSmartDeviceConfig,
-} from './types.js';
-
-interface ModeToggleDef {
-  id: ModeToggleId;
-  label: string;
-  mode: TSmartMode;
-  subtype: string;
-}
-
-const MODE_DEFS: Record<ModeToggleId, ModeToggleDef> = {
-  boost: { id: 'boost', label: 'Boost', mode: TSmartMode.Boost, subtype: 'mode-boost' },
-  // Config id "away" maps to device Travel mode (HA Away/Travel).
-  away: { id: 'away', label: 'Away', mode: TSmartMode.Travel, subtype: 'mode-away' },
-  eco: { id: 'eco', label: 'Eco', mode: TSmartMode.Eco, subtype: 'mode-eco' },
-  smart: { id: 'smart', label: 'Smart', mode: TSmartMode.Smart, subtype: 'mode-smart' },
-};
+import { parseDeviceConfig, type TSmartDeviceConfig } from './types.js';
 
 /**
- * One T-Smart heater: HeaterCooler + optional mode Switch services.
+ * One T-Smart heater as a HomeKit HeaterCooler (+ Low TemperatureSensor).
  *
- * Mode switches are mutually exclusive (radio). Turning all of them off
- * sets the device to Manual mode.
+ * Heater current temp is always the High probe (device display). Low is a
+ * separate thermometer. Apple Home controls Off/Heat + setpoint only; every
+ * HomeKit write uses Manual mode.
  *
  * Concurrency model:
  * - Global UDP lock lives in TSmartClient (port 1337)
@@ -50,16 +30,14 @@ const MODE_DEFS: Record<ModeToggleId, ModeToggleDef> = {
  * - StatusCoordinator (generation + controlInFlight) drops stale poll results
  *
  * Reachability: GETs require live status and fail after repeated poll errors so
- * HomeKit can show Not Responding. SETs still attempt UDP so the user can recover
- * a previously unreachable device.
+ * HomeKit can show Not Responding. SETs refresh companion fields (power/setpoint)
+ * from the device when needed, then write. Parked accessories reject both.
  */
 export class TSmartPlatformAccessory {
   private device: TSmartDeviceConfig;
   private client: TSmartClient;
   private readonly heaterService: Service;
-  private readonly modeServices = new Map<ModeToggleId, Service>();
-  private enabledModes: ModeToggleDef[];
-  private temperatureMode: TemperatureMode;
+  private readonly lowTempService: Service;
   private readonly sync = new StatusCoordinator();
   private readonly controlQueue = new SerialQueue();
   private readonly refreshQueue = new SerialQueue();
@@ -91,11 +69,17 @@ export class TSmartPlatformAccessory {
       throw new Error(`Invalid device context on accessory ${accessory.displayName}`);
     }
     this.device = device;
-    this.temperatureMode = this.device.temperatureMode ?? 'high';
     this.client = new TSmartClient(this.device.ip, this.platform.log);
 
     this.accessory.displayName = this.device.name;
-    this.enabledModes = this.resolveModes(this.device.modes);
+
+    // Drop legacy mode switches / duplicate High sensors from older plugin versions.
+    for (const service of [...this.accessory.services]) {
+      const subtype = service.subtype ?? '';
+      if (subtype.startsWith('mode-') || subtype === 'temp-high') {
+        this.accessory.removeService(service);
+      }
+    }
 
     const info =
       this.accessory.getService(this.platform.Service.AccessoryInformation) ||
@@ -109,10 +93,15 @@ export class TSmartPlatformAccessory {
       );
 
     this.heaterService =
+      this.accessory.getServiceById(this.platform.Service.HeaterCooler, 'heater') ||
       this.accessory.getService(this.platform.Service.HeaterCooler) ||
-      this.accessory.addService(this.platform.Service.HeaterCooler, this.device.name);
+      this.accessory.addService(
+        this.platform.Service.HeaterCooler,
+        this.device.name,
+        'heater',
+      );
 
-    this.heaterService.setCharacteristic(this.platform.Characteristic.Name, this.device.name);
+    this.setServiceName(this.heaterService, this.device.name);
 
     this.heaterService
       .getCharacteristic(this.platform.Characteristic.Active)
@@ -142,7 +131,14 @@ export class TSmartPlatformAccessory {
       .onGet(this.handleTargetTemperatureGet.bind(this))
       .onSet(this.handleTargetTemperatureSet.bind(this));
 
-    this.setupModeSwitches();
+    this.lowTempService =
+      this.accessory.getServiceById(this.platform.Service.TemperatureSensor, 'temp-low') ||
+      this.accessory.addService(this.platform.Service.TemperatureSensor, 'Low', 'temp-low');
+    this.setServiceName(this.lowTempService, 'Low');
+    this.lowTempService
+      .getCharacteristic(this.platform.Characteristic.CurrentTemperature)
+      .setProps({ minValue: 0, maxValue: 100, minStep: 0.1 })
+      .onGet(this.handleLowTemperatureGet.bind(this));
 
     void this.enqueueRefresh();
     this.pollTimer = setInterval(() => {
@@ -186,7 +182,6 @@ export class TSmartPlatformAccessory {
 
     this.parkedForIpConflict = false;
 
-    const modesChanged = !modeListsEqual(this.device.modes, next.modes ?? this.device.modes);
     const ipChanged = next.ip !== this.device.ip;
     const idChanged = Boolean(next.deviceId) && !deviceIdsMatch(next.deviceId, this.device.deviceId);
     const nameChanged = next.name !== this.device.name;
@@ -195,26 +190,12 @@ export class TSmartPlatformAccessory {
       ...this.device,
       ...next,
       deviceId: next.deviceId ?? this.device.deviceId,
-      temperatureMode: next.temperatureMode ?? this.device.temperatureMode,
-      modes: next.modes ?? this.device.modes,
     };
-    this.temperatureMode = this.device.temperatureMode ?? 'high';
     this.accessory.context.device = this.device;
 
     if (nameChanged) {
       this.accessory.displayName = this.device.name;
-      this.heaterService.setCharacteristic(
-        this.platform.Characteristic.Name,
-        this.device.name,
-      );
-      for (const def of this.enabledModes) {
-        this.modeServices
-          .get(def.id)
-          ?.setCharacteristic(
-            this.platform.Characteristic.Name,
-            `${this.device.name} ${def.label}`,
-          );
-      }
+      this.setServiceName(this.heaterService, this.device.name);
     }
 
     this.accessory
@@ -223,12 +204,6 @@ export class TSmartPlatformAccessory {
         this.platform.Characteristic.SerialNumber,
         this.device.deviceId ?? this.device.ip,
       );
-
-    if (modesChanged) {
-      this.enabledModes = this.resolveModes(this.device.modes);
-      this.modeServices.clear();
-      this.setupModeSwitches();
-    }
 
     this.platform.api.updatePlatformAccessories([this.accessory]);
 
@@ -241,6 +216,15 @@ export class TSmartPlatformAccessory {
       );
       this.sync.invalidate();
       this.hasLiveStatus = false;
+      this.status = {
+        power: false,
+        setpoint: 55,
+        mode: TSmartMode.Manual,
+        temperatureHigh: 55,
+        temperatureLow: 55,
+        temperatureAverage: 55,
+        relay: false,
+      };
       this.client = new TSmartClient(next.ip, this.platform.log);
       this.consecutiveFailures = 0;
       void this.enqueueRefresh();
@@ -274,60 +258,6 @@ export class TSmartPlatformAccessory {
     return deviceNamesMatch(this.device.name, next.name);
   }
 
-  private resolveModes(config: ModeToggleId[] | undefined): ModeToggleDef[] {
-    // undefined → defaults; [] → no mode switches
-    const modeIds = config === undefined ? DEFAULT_MODES : config;
-    const seen = new Set<ModeToggleId>();
-    const result: ModeToggleDef[] = [];
-
-    for (const id of modeIds) {
-      const def = MODE_DEFS[id];
-      if (!def) {
-        this.platform.log.warn('Unknown mode "%s" for %s — ignoring', id, this.device.name);
-        continue;
-      }
-      if (seen.has(id)) {
-        this.platform.log.warn('Duplicate mode "%s" for %s — ignoring', id, this.device.name);
-        continue;
-      }
-      seen.add(id);
-      result.push(def);
-    }
-
-    return result;
-  }
-
-  private setupModeSwitches(): void {
-    // Remove existing mode switches before re-adding so On listeners are never stacked.
-    for (const service of [...this.accessory.services]) {
-      if (service.subtype?.startsWith('mode-')) {
-        this.accessory.removeService(service);
-      }
-    }
-
-    for (const def of this.enabledModes) {
-      const service = this.accessory.addService(
-        this.platform.Service.Switch,
-        `${this.device.name} ${def.label}`,
-        def.subtype,
-      );
-
-      service.setCharacteristic(
-        this.platform.Characteristic.Name,
-        `${this.device.name} ${def.label}`,
-      );
-
-      service
-        .getCharacteristic(this.platform.Characteristic.On)
-        .onGet(this.handleModeGet.bind(this, def))
-        .onSet(async (value) => {
-          await this.handleModeSwitchSet(def, Boolean(value));
-        });
-
-      this.modeServices.set(def.id, service);
-    }
-  }
-
   private assertReachable(): void {
     if (
       this.parkedForIpConflict ||
@@ -354,9 +284,18 @@ export class TSmartPlatformAccessory {
     return clampSetpoint(value, TEMP_MIN, TEMP_MAX, TEMP_STEP);
   }
 
+  private setServiceName(service: Service, name: string): void {
+    service.setCharacteristic(this.platform.Characteristic.Name, name);
+    try {
+      service.setCharacteristic(this.platform.Characteristic.ConfiguredName, name);
+    } catch {
+      // Some service types / HAP builds reject ConfiguredName.
+    }
+  }
+
   private async handleActiveGet(): Promise<CharacteristicValue> {
     this.assertReachable();
-    const { active } = presentHeater(this.status, this.temperatureMode, this.clampDeviceSetpoint.bind(this));
+    const { active } = presentHeater(this.status, this.clampDeviceSetpoint.bind(this));
     return active
       ? this.platform.Characteristic.Active.ACTIVE
       : this.platform.Characteristic.Active.INACTIVE;
@@ -365,16 +304,13 @@ export class TSmartPlatformAccessory {
   private async handleActiveSet(value: CharacteristicValue): Promise<void> {
     const power = value === this.platform.Characteristic.Active.ACTIVE;
     this.platform.log.info('Set Active → %s (%s)', power ? 'ON' : 'OFF', this.device.name);
-    await this.applyControl(power, this.status.mode, this.status.setpoint);
+    // Keep the device setpoint; resolve it inside applyControl after a fresh read if needed.
+    await this.applyControl({ power });
   }
 
   private async handleCurrentStateGet(): Promise<CharacteristicValue> {
     this.assertReachable();
-    const { currentState } = presentHeater(
-      this.status,
-      this.temperatureMode,
-      this.clampDeviceSetpoint.bind(this),
-    );
+    const { currentState } = presentHeater(this.status, this.clampDeviceSetpoint.bind(this));
     switch (currentState) {
       case 'heating':
         return this.platform.Characteristic.CurrentHeaterCoolerState.HEATING;
@@ -393,14 +329,17 @@ export class TSmartPlatformAccessory {
 
   private async handleCurrentTemperatureGet(): Promise<CharacteristicValue> {
     this.assertReachable();
-    return presentHeater(this.status, this.temperatureMode, this.clampDeviceSetpoint.bind(this))
-      .currentTemperature;
+    return presentHeater(this.status, this.clampDeviceSetpoint.bind(this)).currentTemperature;
+  }
+
+  private async handleLowTemperatureGet(): Promise<CharacteristicValue> {
+    this.assertReachable();
+    return this.status.temperatureLow;
   }
 
   private async handleTargetTemperatureGet(): Promise<CharacteristicValue> {
     this.assertReachable();
-    return presentHeater(this.status, this.temperatureMode, this.clampDeviceSetpoint.bind(this))
-      .targetTemperature;
+    return presentHeater(this.status, this.clampDeviceSetpoint.bind(this)).targetTemperature;
   }
 
   private async handleTargetTemperatureSet(value: CharacteristicValue): Promise<void> {
@@ -410,46 +349,19 @@ export class TSmartPlatformAccessory {
     }
     const setpoint = this.clampDeviceSetpoint(numeric);
     this.platform.log.info('Set target temperature → %s°C (%s)', setpoint, this.device.name);
-    await this.applyControl(this.status.power, this.status.mode, setpoint);
-  }
-
-  private handleModeGet(def: ModeToggleDef): CharacteristicValue {
-    this.assertReachable();
-    return this.status.mode === def.mode;
-  }
-
-  private async handleModeSwitchSet(def: ModeToggleDef, on: boolean): Promise<void> {
-    if (on) {
-      this.platform.log.info('Enable mode %s (%s)', def.label, this.device.name);
-      // Preserve power (matches tsmart_ha climate preset handling).
-      await this.applyControl(this.status.power, def.mode, this.status.setpoint);
-      return;
-    }
-
-    if (this.status.mode === def.mode) {
-      this.platform.log.info('Clear mode %s → Manual (%s)', def.label, this.device.name);
-      await this.applyControl(this.status.power, TSmartMode.Manual, this.status.setpoint);
-      return;
-    }
-
-    this.platform.log.debug(
-      'Mode switch %s turned off but mode is %s — no-op (%s)',
-      def.label,
-      this.status.mode,
-      this.device.name,
-    );
+    // Keep the device power state; resolve it inside applyControl after a fresh read if needed.
+    await this.applyControl({ setpoint });
   }
 
   /**
    * Serialize controls on controlQueue. Ack HomeKit after UDP controlSet succeeds,
    * then keep the queue busy for settle + refresh so the next write is HA-paced
    * (HomeKit promise resolves before settle finishes).
+   *
+   * Omitted fields are taken from live device status (refreshed when needed) so
+   * we never write the hardcoded startup defaults for power/setpoint.
    */
-  private applyControl(
-    power: boolean,
-    mode: TSmartMode,
-    setpoint: number,
-  ): Promise<void> {
+  private applyControl(update: { power?: boolean; setpoint?: number }): Promise<void> {
     return new Promise((resolve, reject) => {
       void this.controlQueue.enqueue(async () => {
         if (this.isInactive()) {
@@ -464,6 +376,21 @@ export class TSmartPlatformAccessory {
             reject(this.hapCommunicationError());
             return;
           }
+
+          if (!this.hasLiveStatus) {
+            const status = await this.client.getStatus();
+            if (!this.controlStillCurrent(gen)) {
+              reject(this.hapCommunicationError());
+              return;
+            }
+            this.status = status;
+            this.markLive();
+          }
+
+          const power = update.power ?? this.status.power;
+          const setpoint = update.setpoint ?? this.status.setpoint;
+          // HomeKit writes always use Manual; leave Eco/Smart/etc. to the device UI.
+          const mode = TSmartMode.Manual;
 
           await this.client.controlSet(power, mode, setpoint);
           if (!this.controlStillCurrent(gen)) {
@@ -612,7 +539,7 @@ export class TSmartPlatformAccessory {
     return !this.parkedForIpConflict;
   }
 
-  /** Promote an IP-only accessory after a matching 0x21 read. */
+  /** Promote an IP-only accessory after a matching 0x21 read; persist into config.json. */
   private learnDeviceId(deviceId: string): void {
     if (this.device.deviceId || this.isInactive()) {
       return;
@@ -623,16 +550,17 @@ export class TSmartPlatformAccessory {
       .getService(this.platform.Service.AccessoryInformation)
       ?.setCharacteristic(this.platform.Characteristic.SerialNumber, deviceId);
     this.platform.api.updatePlatformAccessories([this.accessory]);
+    this.platform.persistLearnedDeviceId({
+      name: this.device.name,
+      ip: this.device.ip,
+      deviceId,
+    });
     this.platform.log.debug('Learned device id %s for %s', deviceId, this.device.name);
   }
 
   private publishCharacteristics(): void {
     const { Characteristic } = this.platform;
-    const view = presentHeater(
-      this.status,
-      this.temperatureMode,
-      this.clampDeviceSetpoint.bind(this),
-    );
+    const view = presentHeater(this.status, this.clampDeviceSetpoint.bind(this));
 
     this.heaterService.updateCharacteristic(
       Characteristic.Active,
@@ -663,9 +591,9 @@ export class TSmartPlatformAccessory {
       view.targetTemperature,
     );
 
-    for (const def of this.enabledModes) {
-      const service = this.modeServices.get(def.id);
-      service?.updateCharacteristic(Characteristic.On, this.status.mode === def.mode);
-    }
+    this.lowTempService.updateCharacteristic(
+      Characteristic.CurrentTemperature,
+      this.status.temperatureLow,
+    );
   }
 }

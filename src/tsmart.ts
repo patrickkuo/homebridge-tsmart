@@ -22,7 +22,7 @@ export enum TSmartMode {
   Boost = 5,
 }
 
-/** True for device mode bytes 0–5 (includes Timer, which UI may not expose). */
+/** True for device mode bytes 0–5. */
 export function isValidDeviceMode(mode: number): mode is TSmartMode {
   return Number.isInteger(mode) && mode >= TSmartMode.Manual && mode <= TSmartMode.Boost;
 }

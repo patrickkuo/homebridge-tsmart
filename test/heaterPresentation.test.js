@@ -15,8 +15,8 @@ describe('heaterPresentation', () => {
     relay: true,
   };
 
-  it('maps power+relay to heating', () => {
-    const view = presentHeater(status, 'high', (v) => clampSetpoint(v, 15, 70, 0.5));
+  it('maps power+relay to heating and always uses High temp', () => {
+    const view = presentHeater(status, (v) => clampSetpoint(v, 15, 70, 0.5));
     assert.equal(view.active, true);
     assert.equal(view.currentState, 'heating');
     assert.equal(view.currentTemperature, 60);
@@ -26,12 +26,11 @@ describe('heaterPresentation', () => {
   it('maps power off to inactive', () => {
     const view = presentHeater(
       { ...status, power: false, relay: false },
-      'average',
       (v) => clampSetpoint(v, 15, 70, 0.5),
     );
     assert.equal(view.active, false);
     assert.equal(view.currentState, 'inactive');
-    assert.equal(view.currentTemperature, 50);
+    assert.equal(view.currentTemperature, 60);
   });
 
   it('clamps setpoint to bounds and step', () => {
