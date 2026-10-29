@@ -4,14 +4,33 @@ Homebridge plugin for **Tesla T-Smart** and other **EUROICC** water heaters. Con
 
 ## Install
 
-1. Install via Homebridge UI (Plugins) searching for `homebridge-tsmart`, or from GitHub:
+The Homebridge UI Plugins search only finds packages on the **npm registry**. Until this plugin is published there, install on the **Homebridge host** (SSH or UI Terminal), not on your laptop:
 
-   ```bash
-   npm install -g patrickkuo/homebridge-tsmart
-   ```
+```bash
+sudo hb-service add github:patrickkuo/homebridge-tsmart
+sudo hb-service restart
+```
 
-2. Add a **TSmart** platform in config (UI form or JSON).
-3. Prefer a **static DHCP reservation** when you can; the plugin also tracks heaters by **device id** so HomeKit identity survives IP changes.
+If `hb-service add` does not accept a GitHub URL:
+
+```bash
+cd /var/lib/homebridge
+sudo npm install github:patrickkuo/homebridge-tsmart
+sudo hb-service restart
+```
+
+Then add a **TSmart** platform in config (UI form or JSON). Prefer a **static DHCP reservation** when you can; the plugin also tracks heaters by **device id** so HomeKit identity survives IP changes.
+
+**“Cannot find module …/dist/index.js”** means an old GitHub install without a build. On the Homebridge host:
+
+```bash
+cd /var/lib/homebridge/node_modules/homebridge-tsmart
+sudo npm install --include=dev
+sudo npm run build
+sudo hb-service restart
+```
+
+Or remove and reinstall from GitHub (current `main` runs `prepare` → build on install).
 
 ## Config example
 
