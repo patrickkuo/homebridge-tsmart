@@ -5,6 +5,8 @@ export type ModeToggleId = 'boost' | 'away' | 'eco' | 'smart';
 export interface TSmartDeviceConfig {
   name: string;
   ip: string;
+  /** Stable heater id from discovery / config read — survives IP changes. */
+  deviceId?: string;
   temperatureMode?: TemperatureMode;
   modes?: ModeToggleId[];
 }
@@ -34,6 +36,13 @@ export function parseDeviceConfig(raw: unknown): TSmartDeviceConfig | null {
   }
 
   const device: TSmartDeviceConfig = { name, ip };
+
+  if (raw.deviceId !== undefined) {
+    if (typeof raw.deviceId !== 'string' || raw.deviceId.length === 0) {
+      return null;
+    }
+    device.deviceId = raw.deviceId.toUpperCase();
+  }
 
   if (raw.temperatureMode !== undefined) {
     if (typeof raw.temperatureMode !== 'string' || !TEMPERATURE_MODES.has(raw.temperatureMode as TemperatureMode)) {

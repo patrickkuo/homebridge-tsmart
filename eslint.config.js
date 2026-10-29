@@ -23,6 +23,7 @@ export default tseslint.config(
     files: ['test/**/*.js'],
     languageOptions: {
       globals: {
+        Buffer: 'readonly',
         setTimeout: 'readonly',
       },
     },
